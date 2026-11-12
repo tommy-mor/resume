@@ -1,12 +1,15 @@
 --title--
 agent-o-rama debugger UI
 --company--
-Red Planet Labs (open-ish)
+Red Planet Labs
 --dates--
-2025
+2024 - 2025
 --location--
+remote
 --tags--
-clojure, clojurescript, react, agents, llm observability, langgraph, langsmith, jvm
+clojure, clojurescript, react, uagents, llm observability, langgraph, langsmith, jvm
 --bullets--
+Built entire ui alone, entire product surface area equivalent to product with 100M in funding
 Keynote demo at clojure/conj 2025
 Production debugging UI for JVM agent traces
+Used in production at multiple companies
