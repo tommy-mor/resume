@@ -1,0 +1,12 @@
+Engineering Intern
+--
+Cadence Neuroscience
+--
+2021 (6 months)
+--
+
+--
+python, data storage, compression, software engineering
+--
+Improved data storage system, reducing file sizes by 50%
+General software engineering support

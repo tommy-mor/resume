@@ -1,0 +1,55 @@
+% Custom minimal resume template — pdflatex compatible, one page.
+% Placeholders replaced by build.py (see template body below).
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage[margin=0.45in,top=0.38in,bottom=0.38in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+
+\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+
+\setlist[itemize]{leftmargin=1.2em, itemsep=1pt, topsep=2pt, parsep=0pt, partopsep=0pt}
+\setlist[itemize,1]{label=\textbullet}
+
+\hypersetup{colorlinks=true, urlcolor=black, linkcolor=black}
+
+\newcommand{\resumeHeader}[2]{%
+  \begin{center}
+    {\LARGE\bfseries #1}\\[3pt]
+    {\small #2}
+  \end{center}
+  \vspace{-2pt}
+}
+
+\newcommand{\entryHeading}[4]{%
+  \vspace{3pt}%
+  \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}%
+    \textbf{#1} & {\small #3} \\%
+    {\small\textit{#2}} & {\small\textit{#4}} \\%
+  \end{tabular*}\vspace{1pt}%
+}
+
+\begin{document}
+
+\resumeHeader{@@NAME@@}{@@CONTACT@@}
+
+\section*{Education}
+@@EDUCATION@@
+
+\section*{Experience}
+@@EXPERIENCE@@
+
+@@PROJECTS@@
+
+\section*{Skills}
+@@SKILLS@@
+
+\end{document}

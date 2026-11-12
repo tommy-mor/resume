@@ -1,0 +1,10 @@
+.build/
+resume.tex
+__pycache__/
+tectonic_dl/
+# secrets — never commit API keys
+.env
+# generated resumes — keep only the source pool + old reference pdf
+resume.pdf
+resume-*.pdf
+!Resume_old.pdf

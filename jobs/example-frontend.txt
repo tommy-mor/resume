@@ -1,0 +1,7 @@
+Frontend / Creative Engineer (React, Svelte, Data Viz)
+
+Early-stage startup building interactive data-visualization and community
+products. Ideal candidate has shipped React and Svelte frontends, built
+admin dashboards, worked on open-source visualization tools (Glue or similar),
+and has founded or bootstrapped community projects. JavaScript across React,
+React Native, Angular, Vue, plus Python visualization experience preferred.

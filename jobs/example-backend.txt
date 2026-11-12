@@ -1,0 +1,8 @@
+Senior Backend Engineer (JVM / Clojure)
+
+We are hiring a backend engineer to build our LLM agent observability platform.
+Our stack is Clojure on the JVM (Rama), with React frontends for debugging
+agent traces. Experience with LangGraph / LangSmith-style agent frameworks,
+API server design, distributed systems, and production debugging tools is
+highly valued. You will own features on a developer platform used by
+production customers.

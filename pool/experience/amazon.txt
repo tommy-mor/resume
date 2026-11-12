@@ -1,0 +1,12 @@
+Software Development Engineer Intern
+--
+Amazon (Alexa)
+--
+Summer 2022 (2 months)
+--
+Seattle, WA
+--
+java, backend, alexa, distributed systems, build systems, deployments
+--
+Fixed long-standing bug in Alexa backend system
+Shepherded fix through internal build system, coordinating deployments across two teams

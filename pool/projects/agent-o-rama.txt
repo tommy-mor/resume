@@ -1,0 +1,13 @@
+agent-o-rama debugger UI
+--
+Red Planet Labs (open-ish)
+--
+2025
+--
+
+--
+clojure, clojurescript, react, agents, llm observability, langgraph, langsmith, jvm
+--
+Keynote demo at clojure/conj 2025
+Production debugging UI for JVM agent traces
+Add your longer bullet list here -- one bullet per line

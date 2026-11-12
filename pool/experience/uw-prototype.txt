@@ -1,0 +1,12 @@
+Software Prototype Intern
+--
+University of Washington
+--
+2018 -- 2019
+--
+Seattle, WA
+--
+javascript, tablet, mobile, cloud, clinical, research, motor disorders
+--
+Built tablet app for recording + cloud storage of motor-disorder diagnostic drawing tests, plus JS site for remote replay/diagnosis by clinicians
+In user trials; published at EMBC: 10.1109/EMBC44109.2020.9176044
