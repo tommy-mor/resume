@@ -1,0 +1,15 @@
+--title--
+sorter pairwise social app
+--company--
+sorter
+--dates--
+2024 - now
+--location--
+Remote
+--tags--
+clojure, rust, react, typescript, postgresql, pairwise voting, random-walk ranking, social, fullstack
+--bullets--
+Built pairwise "democratic" social app (Clojure API, Rust ranking engine, React/TypeScript frontend, Postgres) with 18,000+ votes from 200 voters over 3,900 items
+Imported 2,300+ items from YouTube, Spotify, X, TikTok, Discord, and Linear alongside 1,500+ native posts
+Ranked items with PageRank over the vote graph in Rust
+Deployed on DigitalOcean (systemd + nginx) with 238 accounts
