@@ -7,9 +7,9 @@ Red Planet Labs
 --location--
 remote
 --tags--
-clojure, clojurescript, react, uagents, llm observability, langgraph, langsmith, jvm
+clojure, clojurescript, react, agents, llm observability, langgraph, langsmith, jvm
 --bullets--
-Built entire ui alone, entire product surface area equivalent to product with 100M in funding
-Keynote demo at clojure/conj 2025
-Production debugging UI for JVM agent traces
+Built entire ui alone, product surface area equivalent to langsmith with 100M in funding
+[Keynote demo](https://youtu.be/mNLWtM3Iya4?t=2017) at clojure/conj 2025
+LLM agent debugging UI for rama JVM agents
 Used in production at multiple companies

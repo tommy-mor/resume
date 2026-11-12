@@ -5,12 +5,11 @@
 //! muse-tricks dealer (`pair.rs`) → judge each pair with
 //! `google/gemini-decision-1` on OpenRouter (`decisions.rs`, the only
 //! AI path) → settle the vote graph with the muse-tricks random walk
-//! (`ranking.rs`) → filter top `--max-exp` experience by salience and
-//! `--max-proj` projects by salience, then order experience
-//! newest-first by start date (projects keep salience order) → render
-//! `template.tex` with all bullets of the selected entries → compile
-//! with tectonic/pdflatex → drop oldest (`experience`) / least-salient
-//! (`projects`) entries until the PDF is one page.
+//! (`ranking.rs`) → order experience newest-first by start date
+//! (projects keep salience order) → render `template.tex` with every
+//! ranked entry → compile with tectonic/pdflatex → only if the PDF
+//! overflows one page, drop the least-salient entry and rebuild until
+//! it fits. Ranking exists solely to pick the trim order.
 //!
 //! There is no local scoring and no other provider: without
 //! `OPENROUTER_KEY` the build fails before compiling anything.
@@ -21,8 +20,10 @@ mod pool;
 mod ranking;
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use clap::Parser;
 
@@ -45,12 +46,6 @@ struct Args {
     /// Output PDF path.
     #[arg(long, default_value = "resume.pdf")]
     out: PathBuf,
-    /// Max experience entries to include.
-    #[arg(long, default_value_t = 4)]
-    max_exp: usize,
-    /// Max project entries to include.
-    #[arg(long, default_value_t = 2)]
-    max_proj: usize,
     /// OpenRouter Decisions model id. Always served by OpenRouter.
     #[arg(long, default_value = DEFAULT_MODEL)]
     model: String,
@@ -74,10 +69,103 @@ fn canon(a: u32, b: u32) -> (u32, u32) {
     if a < b { (a, b) } else { (b, a) }
 }
 
+fn flush_stderr() {
+    let _ = std::io::stderr().flush();
+}
+
+/// Live snapshot of the ranking after `votes_done` decisions.
+///
+/// Recomputes the random-walk scores from the edges seen so far. When the
+/// vote graph is still disconnected the scores are only comparable
+/// inside each component, so components are printed separately and
+/// never-voted singletons are collapsed into one `unvoted:` line.
+/// Returned as text (no print) so it can be asserted in tests.
+fn interim_ranking_text(
+    kind: &str,
+    entries: &[Entry],
+    voted: &HashSet<(usize, usize)>,
+    edges: &[(usize, usize, f64)],
+    votes_done: usize,
+    budget: usize,
+) -> String {
+    let groups = rank_groups(entries.len(), voted, edges, MAX_ITERS, TOL);
+    let mut s = String::new();
+    if groups.len() == 1 {
+        s.push_str(&format!(
+            "  [ranking {kind} @ {votes_done}/{budget} votes] ({} entries)\n",
+            entries.len()
+        ));
+        for (rank, (idx, score)) in groups[0].ranked.iter().enumerate() {
+            let e = &entries[*idx];
+            s.push_str(&format!(
+                "    {}. {:.2}  {}: {} @ {}\n",
+                rank + 1,
+                score,
+                e.id,
+                e.title,
+                e.company
+            ));
+        }
+    } else {
+        s.push_str(&format!(
+            "  [ranking {kind} @ {votes_done}/{budget} votes] partial — {} components\n",
+            groups.len()
+        ));
+        let mut unvoted: Vec<String> = Vec::new();
+        for (gi, g) in groups.iter().enumerate() {
+            if g.members.len() == 1 {
+                unvoted.push(entries[g.members[0]].id.clone());
+                continue;
+            }
+            s.push_str(&format!(
+                "    component {} ({} entries, {} votes):\n",
+                gi + 1,
+                g.members.len(),
+                g.pairs
+            ));
+            for (rank, (idx, score)) in g.ranked.iter().enumerate() {
+                let e = &entries[*idx];
+                s.push_str(&format!(
+                    "      {}. {:.2}  {}: {} @ {}\n",
+                    rank + 1,
+                    score,
+                    e.id,
+                    e.title,
+                    e.company
+                ));
+            }
+        }
+        if !unvoted.is_empty() {
+            s.push_str(&format!("    unvoted ({}): {}\n", unvoted.len(), unvoted.join(", ")));
+        }
+    }
+    s.trim_end().to_string()
+}
+
+fn print_interim_ranking(
+    kind: &str,
+    entries: &[Entry],
+    voted_u32: &HashSet<(u32, u32)>,
+    edges: &[(usize, usize, f64)],
+    votes_done: usize,
+    budget: usize,
+) {
+    let voted_usize: HashSet<(usize, usize)> = voted_u32
+        .iter()
+        .map(|&(a, b)| (a as usize, b as usize))
+        .collect();
+    eprintln!("{}", interim_ranking_text(kind, entries, &voted_usize, edges, votes_done, budget));
+    flush_stderr();
+}
+
 /// Rank one kind (experience or projects) by sequential pairwise
 /// decisions. Returns the entries best-first with their settled scores.
 /// With fewer than two entries there is nothing to compare: the single
 /// entry scores `1.0` with no API call.
+/// Progress is printed to stderr as it ranks: the pair being judged
+/// (flushed) before the blocking request, then the result and the live
+/// interim ranking after each vote — so a slow or failed request still
+/// shows which comparison was in flight instead of silence.
 fn rank_kind(
     kind: &str,
     entries: &[Entry],
@@ -87,14 +175,25 @@ fn rank_kind(
 ) -> Result<Vec<(f64, Entry)>, String> {
     let n = entries.len();
     if n == 0 {
+        eprintln!("[rank] {kind}: no entries");
+        flush_stderr();
         return Ok(vec![]);
     }
     if n == 1 {
+        eprintln!("[rank] {kind}: single entry {}, score 1.00 (no votes)", entries[0].id);
+        flush_stderr();
         return Ok(vec![(1.0, entries[0].clone())]);
     }
     let n32 = n as u32;
     let budget = max_votes.unwrap_or((n * (n - 1)) / 2);
+    // Display denominator: the tournament has only `n*(n-1)/2` pairs, so a
+    // larger --max-votes cap for a small kind (e.g. 3 projects) would
+    // otherwise print "1/7" for a 3-pair tournament.
+    let total_pairs = (n * (n - 1)) / 2;
+    let display_total = budget.min(total_pairs);
     let texts: Vec<String> = entries.iter().map(describe).collect();
+    eprintln!("[rank] {kind}: ranking {n} entries over {display_total} votes (cap {budget})");
+    flush_stderr();
 
     let mut voted: HashSet<(u32, u32)> = HashSet::new();
     let mut edges: Vec<(usize, usize, f64)> = Vec::new();
@@ -109,8 +208,31 @@ fn rank_kind(
         // presented as A on consecutive rounds. The voted set stays
         // canonical; only the prompt order flips.
         let (pa, pb) = if round % 2 == 0 { (a, b) } else { (b, a) };
-        let (pa_share, pb_share) =
-            client.decide_pair(job_text, &texts[pa as usize], &texts[pb as usize])?;
+        // Announce before the blocking request (and flush): without
+        // this a slow/failed vote looks like silence, not progress.
+        eprintln!(
+            "[vote {}/{}] ({kind}) judging {} vs {} ...",
+            round + 1,
+            display_total,
+            entries[a as usize].id,
+            entries[b as usize].id
+        );
+        flush_stderr();
+        let t0 = Instant::now();
+        let (pa_share, pb_share) = client
+            .decide_pair(job_text, &texts[pa as usize], &texts[pb as usize])
+            .map_err(|e| {
+                format!(
+                    "({kind} vote {}/{}: {} vs {} presented as {} vs {}) {e}",
+                    round + 1,
+                    display_total,
+                    entries[a as usize].id,
+                    entries[b as usize].id,
+                    entries[pa as usize].id,
+                    entries[pb as usize].id,
+                )
+            })?;
+        let secs = t0.elapsed().as_secs_f64();
         // Edges flow loser -> winner weighted by the winner's share
         // (muse-tricks orientation): presented-A's share lands on
         // (presented-B -> presented-A) and vice versa.
@@ -119,16 +241,28 @@ fn rank_kind(
         let pair_key = canon(a, b);
         current = Some(pair_key);
         voted.insert(pair_key);
+        let winner = if pa_share > pb_share { pa } else { pb };
+        let (w_share, l_share) = if pa_share > pb_share {
+            (pa_share, pb_share)
+        } else {
+            (pb_share, pa_share)
+        };
         eprintln!(
-            "[vote {}/{}] ({kind}) {} vs {}: presented-a {:.2} presented-b {:.2}",
+            "[vote {}/{}] ({kind}) {} vs {}: presented-a {:.2} presented-b {:.2} -> {} leads {:.2}-{:.2} ({:.1}s)",
             round + 1,
-            budget,
+            display_total,
             entries[a as usize].id,
             entries[b as usize].id,
             pa_share,
-            pb_share
+            pb_share,
+            entries[winner as usize].id,
+            w_share,
+            l_share,
+            secs
         );
+        flush_stderr();
         round += 1;
+        print_interim_ranking(kind, entries, &voted, &edges, round, display_total);
     }
 
     let voted_usize: HashSet<(usize, usize)> = voted
@@ -145,17 +279,22 @@ fn rank_kind(
             n * (n - 1) / 2
         ));
     }
-    let ranked = groups[0]
+    let ranked: Vec<(f64, Entry)> = groups[0]
         .ranked
         .iter()
         .map(|&(idx, score)| (score, entries[idx].clone()))
         .collect();
+    eprintln!("[rank] {kind}: done ({round}/{display_total} votes), final ranking:");
+    for (rank, (score, e)) in ranked.iter().enumerate() {
+        eprintln!("    {}. {:.2}  {}: {} @ {}", rank + 1, score, e.id, e.title, e.company);
+    }
+    flush_stderr();
     Ok(ranked)
 }
 
-/// Order selected experience newest-first by start date (ties: later
-/// end first, then `id` for determinism). Salience decides *which*
-/// entries are selected; date decides *where they appear*.
+/// Order experience newest-first by start date (ties: later end first,
+/// then `id` for determinism). Salience decides the trim order on
+/// overflow; date decides where experience appears.
 fn sort_by_date_desc(items: &mut [(f64, Entry)]) {
     items.sort_by(|(_, a), (_, b)| {
         b.range
@@ -164,6 +303,35 @@ fn sort_by_date_desc(items: &mut [(f64, Entry)]) {
             .then_with(|| b.range.end_key().cmp(&a.range.end_key()))
             .then_with(|| a.id.cmp(&b.id))
     });
+}
+
+/// Index of the next entry to trim: the least-salient (lowest score).
+/// Ties go to the oldest start date (year-only earliest, then `id`),
+/// so a near-equal item is trimmed from the older end. Returns `None`
+/// for an empty list. Scores are only comparable within one kind.
+fn trim_victim(items: &[(f64, Entry)]) -> Option<usize> {
+    let mut victim: Option<usize> = None;
+    for (i, (score, entry)) in items.iter().enumerate() {
+        match victim {
+            None => victim = Some(i),
+            Some(v) => {
+                let (v_score, v_entry) = &items[v];
+                let score = *score;
+                let v_score = *v_score;
+                // NaN scores sort last (never picked while a real score exists).
+                let ord = score.partial_cmp(&v_score).unwrap_or(std::cmp::Ordering::Greater);
+                let worse = ord == std::cmp::Ordering::Less
+                    || (ord == std::cmp::Ordering::Equal
+                        && (entry.range.start_key() < v_entry.range.start_key()
+                            || (entry.range.start_key() == v_entry.range.start_key()
+                                && entry.id < v_entry.id)));
+                if worse {
+                    victim = Some(i);
+                }
+            }
+        }
+    }
+    victim
 }
 
 /// Sort criterion shared by both selection paths. Wraps [`rank_kind`]
@@ -343,46 +511,59 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("template.tex: {e}"))?;
 
     let (ranked_exps, ranked_projs) = select(&pool, &job_text, &args)?;
-    let take_exps = if args.all { usize::MAX } else { args.max_exp };
-    let take_projs = if args.all { usize::MAX } else { args.max_proj };
-    // Filter by salience first (take), then order experience
-    // newest-first by date. Projects keep salience order.
-    let mut ordered_exps: Vec<(f64, Entry)> =
-        ranked_exps.iter().take(take_exps).cloned().collect();
-    sort_by_date_desc(&mut ordered_exps);
-    let ordered_projs: Vec<(f64, Entry)> = ranked_projs.iter().take(take_projs).cloned().collect();
+    // No pre-filter: every ranked entry is included. Ranking only
+    // orders the shrink-to-fit trims below (nothing is dropped
+    // unless the compiled PDF overflows one page).
+    let mut exps_scored: Vec<(f64, Entry)> = ranked_exps.clone();
+    sort_by_date_desc(&mut exps_scored);
+    let mut projs_scored: Vec<(f64, Entry)> = ranked_projs.clone();
 
-    println!("(experience: selected top {} by salience, displayed newest-first)", ordered_exps.len());
-    print_selection("selected experience", &ordered_exps);
-    print_selection("selected projects", &ordered_projs);
+    println!(
+        "(experience: {} entries included, displayed newest-first; trimming only if PDF overflows)",
+        exps_scored.len()
+    );
+    print_selection("included experience", &exps_scored);
+    print_selection("included projects", &projs_scored);
     if args.list_only {
         return Ok(());
     }
 
-    // Shrink-to-fit: all bullets are kept, so fit by dropping whole
-    // entries from the tail. Experience tails are the oldest, project
-    // tails are the least salient. Policy: drop a project when one is
-    // droppable and experience is already small.
-    let mut exps: Vec<Entry> = ordered_exps.iter().map(|(_, e)| e.clone()).collect();
-    let mut projs: Vec<Entry> = ordered_projs.iter().map(|(_, e)| e.clone()).collect();
-    let mut tex = render_tex(&template, &pool, &exps, &projs);
+    // Shrink-to-fit: render every entry with all its bullets first.
+    // Only while the PDF is >1 page, drop the least-salient entry
+    // (ranking is the trim order) and rebuild.
+    let render_entries = |scored: &[(f64, Entry)]| -> Vec<Entry> {
+        scored.iter().map(|(_, e)| e.clone()).collect()
+    };
+    let mut tex = render_tex(&template, &pool, &render_entries(&exps_scored), &render_entries(&projs_scored));
     let mut pages_ok = compile_tex(&tex, &args.out, args.keep_tex || args.all, &root)?;
     if !args.all {
-        while !pages_ok && (!exps.is_empty() || !projs.is_empty()) {
-            if !projs.is_empty() && (exps.len() <= 2 || projs.len() > 1) {
-                let dropped = projs.pop().unwrap();
-                eprintln!("[info] >1 page, dropping least-salient project: {} and rebuilding", dropped.id);
-            } else if !exps.is_empty() {
-                let dropped = exps.pop().unwrap();
-                eprintln!("[info] >1 page, dropping oldest experience: {} and rebuilding", dropped.id);
+        while !pages_ok && (!exps_scored.is_empty() || !projs_scored.is_empty()) {
+            if !projs_scored.is_empty() && (exps_scored.len() <= 2 || projs_scored.len() > 1) {
+                let idx = trim_victim(&projs_scored).expect("non-empty");
+                let (score, dropped) = projs_scored.remove(idx);
+                eprintln!(
+                    "[info] >1 page, dropping least-salient project: {} (score {:.2}) and rebuilding",
+                    dropped.id, score
+                );
+            } else if !exps_scored.is_empty() {
+                let idx = trim_victim(&exps_scored).expect("non-empty");
+                let (score, dropped) = exps_scored.remove(idx);
+                eprintln!(
+                    "[info] >1 page, dropping least-salient experience: {} (score {:.2}) and rebuilding",
+                    dropped.id, score
+                );
             } else {
                 break;
             }
-            tex = render_tex(&template, &pool, &exps, &projs);
+            tex = render_tex(&template, &pool, &render_entries(&exps_scored), &render_entries(&projs_scored));
             pages_ok = compile_tex(&tex, &args.out, args.keep_tex, &root)?;
         }
         if !pages_ok {
-            eprintln!("[warn] still >1 page with {} experience + {} projects; try --max-exp 3", exps.len(), projs.len());
+            eprintln!(
+                "[warn] still >1 page with {} experience + {} projects; pool is too large for one page — remove entries from pool/",
+                exps_scored.len(),
+                projs_scored.len()
+            );
         }
     }
     Ok(())
@@ -438,5 +619,63 @@ mod tests {
         sort_by_date_desc(&mut items);
         let ids: Vec<&str> = items.iter().map(|(_, e)| e.id.as_str()).collect();
         assert_eq!(ids, vec!["new", "mid-now", "old"]);
+    }
+
+    fn entries3() -> Vec<Entry> {
+        vec![
+            entry_with("a", (2020, None), (2020, None), false),
+            entry_with("b", (2020, None), (2020, None), false),
+            entry_with("c", (2020, None), (2020, None), false),
+        ]
+    }
+
+    #[test]
+    fn interim_ranking_shows_live_partial_order() {
+        // 0 beats 1 (0.75); 2 unvoted -> partial with one component + singleton.
+        let entries = entries3();
+        let voted: HashSet<(usize, usize)> = HashSet::from([(0, 1)]);
+        let edges = vec![(1, 0, 0.75), (0, 1, 0.25)];
+        let text = interim_ranking_text("experience", &entries, &voted, &edges, 1, 3);
+        assert!(text.contains("[ranking experience @ 1/3 votes]"), "{text}");
+        assert!(text.contains("partial — 2 components"), "{text}");
+        assert!(text.contains("component 1 (2 entries, 1 votes)"), "{text}");
+        // Winner ranks first inside its component.
+        let first = text.find("a: a @").unwrap();
+        let second = text.find("b: b @").unwrap();
+        assert!(first < second, "{text}");
+        assert!(text.contains("unvoted (1): c"), "{text}");
+    }
+
+    #[test]
+    fn interim_ranking_connected_shows_full_order() {
+        // 2 beats 1, 1 beats 0 -> 2 > 1 > 0 in one component.
+        let entries = entries3();
+        let voted: HashSet<(usize, usize)> = HashSet::from([(0, 1), (1, 2)]);
+        let edges = vec![
+            (0, 1, 0.67),
+            (1, 0, 0.33),
+            (1, 2, 0.67),
+            (2, 1, 0.33),
+        ];
+        let text = interim_ranking_text("experience", &entries, &voted, &edges, 2, 3);
+        assert!(text.contains("[ranking experience @ 2/3 votes] (3 entries)"), "{text}");
+        assert!(!text.contains("partial"), "{text}");
+        let pos_c = text.find("c: c @").unwrap();
+        let pos_b = text.find("b: b @").unwrap();
+        let pos_a = text.find("a: a @").unwrap();
+        assert!(pos_c < pos_b && pos_b < pos_a, "{text}");
+    }
+
+    #[test]
+    fn trim_victim_picks_least_salient_then_oldest() {
+        // Scores decide; among equal lows the oldest start goes first.
+        let items = vec![
+            (0.90, entry_with("new-high", (2024, None), (2026, None), false)),
+            (0.00, entry_with("mid-low", (2020, None), (2020, None), false)),
+            (0.00, entry_with("old-low", (2019, None), (2019, None), false)),
+        ];
+        assert_eq!(trim_victim(&items).unwrap(), 2, "oldest of the tied lows");
+        assert_eq!(trim_victim(&items[0..1]).unwrap(), 0);
+        assert_eq!(trim_victim(&[]), None);
     }
 }

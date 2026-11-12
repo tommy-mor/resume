@@ -566,18 +566,120 @@ pub fn latex_escape(s: &str) -> String {
     out
 }
 
+/// Escape a URL for the first argument of `\href{url}{text}`.
+///
+/// Only `%`, `#`, `&` are escaped, per hyperref's documentation for
+/// `\href`: its first argument gets verbatim-ish catcodes, so `_`,
+/// `~`, `^`, `$`, `{`, `}` must be left raw — hyperref passes them
+/// to the URI unchanged, while e.g. `\$` in the URL would expand
+/// to `\protect...` and corrupt the annotation. The three escapes
+/// are the documented word-safe forms and verified to round-trip
+/// to the raw bytes in the PDF `/URI` annotation.
+fn latex_escape_url(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '%' => out.push_str(r"\%"),
+            '#' => out.push_str(r"\#"),
+            '&' => out.push_str(r"\&"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Render inline prose to LaTeX, preserving Markdown links.
+///
+/// `[text](url)` becomes `\href{url}{text}` (clickable in the PDF via
+/// hyperref) with `text` escaped via [`latex_escape`] and `url` via
+/// `latex_escape_url`. Text around the link is escaped normally.
+/// Anything that is not a well-formed link — `[foo]` with no
+/// `(url)`, `[](url)` with empty text, `(url)` with an empty or
+/// whitespace-containing URL, or a `[` with no closing `]` — falls
+/// back to literal (escaped) text. Brackets in the link text and
+/// parentheses in the URL are matched with nesting so e.g.
+/// `[see [inner]](url)` and `[wiki](https://en.wikipedia.org/wiki/A_(B))`
+/// parse correctly.
+pub fn render_inline(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' {
+            // Balanced `]` search (link text may contain `[...]`).
+            let mut j = i + 1;
+            let mut depth = 1usize;
+            let mut close: Option<usize> = None;
+            while j < chars.len() {
+                if chars[j] == '[' {
+                    depth += 1;
+                } else if chars[j] == ']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if let Some(c) = close {
+                if c > i + 1 && chars.get(c + 1) == Some(&'(') {
+                    // Balanced `)` search (URLs may contain `(...)`).
+                    let mut k = c + 2;
+                    let mut pdepth = 1usize;
+                    let mut close_paren: Option<usize> = None;
+                    while k < chars.len() {
+                        if chars[k] == '(' {
+                            pdepth += 1;
+                        } else if chars[k] == ')' {
+                            pdepth -= 1;
+                            if pdepth == 0 {
+                                close_paren = Some(k);
+                                break;
+                            }
+                        }
+                        k += 1;
+                    }
+                    if let Some(cp) = close_paren {
+                        let text: String = chars[i + 1..c].iter().collect();
+                        let url: String = chars[c + 2..cp].iter().collect();
+                        if !url.is_empty()
+                            && !url.chars().any(|ch| ch.is_whitespace())
+                            && !text.contains('\n')
+                        {
+                            out.push_str("\\href{");
+                            out.push_str(&latex_escape_url(&url));
+                            out.push_str("}{");
+                            out.push_str(&latex_escape(&text));
+                            out.push('}');
+                            i = cp + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        // Literal character (or failed link candidate): escape normally.
+        let ch = chars[i];
+        let mut buf = [0u8; 4];
+        out.push_str(&latex_escape(ch.encode_utf8(&mut buf)));
+        i += 1;
+    }
+    out
+}
+
 fn render_entry(entry: &Entry) -> String {
     let mut s = format!(
         "\\entryHeading{{{}}}{{{}}}{{{}}}{{{}}}\n",
-        latex_escape(&entry.title),
-        latex_escape(&entry.company),
+        render_inline(&entry.title),
+        render_inline(&entry.company),
         latex_escape(&entry.dates),
-        latex_escape(&entry.location),
+        render_inline(&entry.location),
     );
     if !entry.bullets.is_empty() {
         s.push_str("\\begin{itemize}\n");
         for b in &entry.bullets {
-            s.push_str(&format!("\\item {}\n", latex_escape(b)));
+            s.push_str(&format!("\\item {}\n", render_inline(b)));
         }
         s.push_str("\\end{itemize}\n");
     }
@@ -593,7 +695,7 @@ pub fn render_tex(template: &str, pool: &Pool, exps: &[Entry], projs: &[Entry]) 
     let contact = parts
         .iter()
         .filter(|p| !p.trim().is_empty())
-        .map(|p| latex_escape(p))
+        .map(|p| render_inline(p))
         .collect::<Vec<_>>()
         .join(r" $\vert$ ");
 
@@ -611,12 +713,12 @@ pub fn render_tex(template: &str, pool: &Pool, exps: &[Entry], projs: &[Entry]) 
     let skills_tex = pool
         .skills
         .iter()
-        .map(|(label, v)| latex_escape(&format!("{label}: {v}")))
+        .map(|(label, v)| format!("{}: {}", latex_escape(label), render_inline(v)))
         .collect::<Vec<_>>()
         .join(" \\\\\n");
 
     template
-        .replace("@@NAME@@", &latex_escape(&pool.name))
+        .replace("@@NAME@@", &render_inline(&pool.name))
         .replace("@@CONTACT@@", &contact)
         .replace("@@EDUCATION@@", &edu_tex)
         .replace("@@EXPERIENCE@@", &exp_tex)
@@ -715,5 +817,91 @@ mod tests {
         assert!(parse_dates(p, 1, "2023 - 2020").is_err());
         assert!(parse_dates(p, 1, "2020-03 - 2020-01").is_err());
         assert!(parse_dates(p, 1, "2022-08 - 2022").is_ok());
+    }
+
+    #[test]
+    fn markdown_link_renders_as_href() {
+        // The exact bullet from pool/projects/agent-o-rama.txt.
+        assert_eq!(
+            render_inline(
+                "[Keynote demo](https://youtu.be/mNLWtM3Iya4?t=2017) at clojure/conj 2025"
+            ),
+            r"\href{https://youtu.be/mNLWtM3Iya4?t=2017}{Keynote demo} at clojure/conj 2025"
+        );
+    }
+
+    #[test]
+    fn markdown_link_escapes_text_and_url() {
+        assert_eq!(
+            render_inline("[a & b_c](https://example.com/x_y#frag) % done"),
+            r"\href{https://example.com/x_y\#frag}{a \& b\_c} \% done"
+        );
+        // Hyperref verbatim URL arg: `$`, `^`, `~` stay raw in the URL.
+        assert_eq!(
+            render_inline("[x](https://example.com/a$b^c~d)"),
+            r"\href{https://example.com/a$b^c~d}{x}"
+        );
+        assert_eq!(
+            render_inline("see [one](https://a.b) and [two](https://c.d)"),
+            r"see \href{https://a.b}{one} and \href{https://c.d}{two}"
+        );
+    }
+
+    #[test]
+    fn markdown_link_nesting_and_fallback() {
+        // Balanced parens in the URL, balanced brackets in the text.
+        assert_eq!(
+            render_inline("[wiki](https://en.wikipedia.org/wiki/A_(B))"),
+            r"\href{https://en.wikipedia.org/wiki/A_(B)}{wiki}"
+        );
+        assert_eq!(
+            render_inline("[see [v2]](https://example.com)"),
+            r"\href{https://example.com}{see [v2]}"
+        );
+        // Not links: no parens, empty text, empty url, space in url.
+        assert_eq!(render_inline("[not a link]"), "[not a link]");
+        assert_eq!(
+            render_inline("[](https://example.com)"),
+            "[](https://example.com)"
+        );
+        assert_eq!(render_inline("[x]()"), "[x]()");
+        assert_eq!(
+            render_inline("[x](https://a.b/c d)"),
+            "[x](https://a.b/c d)"
+        );
+        assert_eq!(render_inline("[x](https://a.b"), "[x](https://a.b");
+        // Plain text still escapes as before.
+        assert_eq!(render_inline("50% & _x_"), r"50\% \& \_x\_");
+    }
+
+    #[test]
+    fn render_entry_keeps_markdown_link_as_href() {
+        let e = Entry {
+            id: "agent-o-rama".to_string(),
+            kind: "project",
+            file: "agent-o-rama.txt".to_string(),
+            title: "agent-o-rama debugger UI".to_string(),
+            company: "Red Planet Labs".to_string(),
+            dates: "2024 - 2025".to_string(),
+            range: DateRange {
+                start_year: 2024,
+                start_month: None,
+                end_year: 2025,
+                end_month: None,
+                is_now: false,
+            },
+            location: String::new(),
+            tags: vec![],
+            bullets: vec![
+                "[Keynote demo](https://youtu.be/mNLWtM3Iya4?t=2017) at clojure/conj 2025"
+                    .to_string(),
+            ],
+        };
+        let tex = render_entry(&e);
+        assert!(
+            tex.contains(r"\href{https://youtu.be/mNLWtM3Iya4?t=2017}{Keynote demo}"),
+            "{tex}"
+        );
+        assert!(!tex.contains("[Keynote demo]("), "{tex}");
     }
 }

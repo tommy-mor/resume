@@ -117,7 +117,24 @@ impl DecisionsClient {
             .header("X-Title", "resume pairwise sorter")
             .json(&body)
             .send()
-            .map_err(|e| format!("decisions request failed (no retry): {e}"))?;
+            .map_err(|e| {
+                use std::error::Error as _;
+                let mut causes = Vec::new();
+                let mut cur = e.source();
+                while let Some(s) = cur {
+                    causes.push(s.to_string());
+                    cur = s.source();
+                }
+                let cause = if causes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (cause: {})", causes.join("; "))
+                };
+                format!(
+                    "decisions request failed (no retry) — POST {ENDPOINT}: {e}{cause}; \
+                     check network/firewall/proxy and that OPENROUTER_KEY is set"
+                )
+            })?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().unwrap_or_default();
