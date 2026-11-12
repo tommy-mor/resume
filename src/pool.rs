@@ -457,6 +457,67 @@ fn parse_skills(path: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
+/// Split a prose value into atomic rankable items at top-level
+/// commas and `|` separators, respecting `(...)` groups so
+/// `Python (NumPy, Matplotlib, Qt)` stays one item. A `:` prefix
+/// like `Languages: Strong:` is stripped (text after the last `:`).
+pub fn split_rank_items(value: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut cur = String::new();
+    let mut depth: i32 = 0;
+    let push = |items: &mut Vec<String>, cur: String| {
+        let seg = cur.trim();
+        if seg.is_empty() {
+            return;
+        }
+        let cleaned = match seg.rsplit_once(':') {
+            Some((_, rest)) if !rest.trim().is_empty() => rest.trim().to_string(),
+            _ => seg.to_string(),
+        };
+        if !cleaned.is_empty() {
+            items.push(cleaned);
+        }
+    };
+    for ch in value.chars() {
+        match ch {
+            '(' => {
+                cur.push(ch);
+                depth += 1;
+            }
+            ')' => {
+                cur.push(ch);
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            ',' | '|' if depth == 0 => {
+                push(&mut items, std::mem::take(&mut cur));
+            }
+            _ => cur.push(ch),
+        }
+    }
+    push(&mut items, cur);
+    items
+}
+
+/// Atomic `(category, item)` atoms from parsed skills, in file order.
+/// Deduplicated case-insensitively (first occurrence wins).
+pub fn skill_atoms(skills: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (label, value) in skills {
+        for item in split_rank_items(value) {
+            let key = item.trim().to_lowercase();
+            if key.is_empty() || seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push((label.clone(), item));
+        }
+    }
+    out
+}
+
 /// `os-cloud` -> `Os-cloud`? No: `os-cloud` -> `Os Cloud` (words titled).
 fn title_case(s: &str) -> String {
     s.split(['-', '_'])
@@ -590,8 +651,9 @@ fn latex_escape_url(s: &str) -> String {
 
 /// Render inline prose to LaTeX, preserving Markdown links.
 ///
-/// `[text](url)` becomes `\href{url}{text}` (clickable in the PDF via
-/// hyperref) with `text` escaped via [`latex_escape`] and `url` via
+/// `[text](url)` becomes `\resumeLink{url}{text}` (clickable in the
+/// PDF via hyperref, blue and underlined — see `template.tex`) with
+/// `text` escaped via [`latex_escape`] and `url` via
 /// `latex_escape_url`. Text around the link is escaped normally.
 /// Anything that is not a well-formed link — `[foo]` with no
 /// `(url)`, `[](url)` with empty text, `(url)` with an empty or
@@ -647,7 +709,7 @@ pub fn render_inline(s: &str) -> String {
                             && !url.chars().any(|ch| ch.is_whitespace())
                             && !text.contains('\n')
                         {
-                            out.push_str("\\href{");
+                            out.push_str("\\resumeLink{");
                             out.push_str(&latex_escape_url(&url));
                             out.push_str("}{");
                             out.push_str(&latex_escape(&text));
@@ -821,12 +883,12 @@ mod tests {
 
     #[test]
     fn markdown_link_renders_as_href() {
-        // The exact bullet from pool/projects/agent-o-rama.txt.
+        // The exact bullet from pool/experience/red-planet-labs.txt.
         assert_eq!(
             render_inline(
                 "[Keynote demo](https://youtu.be/mNLWtM3Iya4?t=2017) at clojure/conj 2025"
             ),
-            r"\href{https://youtu.be/mNLWtM3Iya4?t=2017}{Keynote demo} at clojure/conj 2025"
+            r"\resumeLink{https://youtu.be/mNLWtM3Iya4?t=2017}{Keynote demo} at clojure/conj 2025"
         );
     }
 
@@ -834,16 +896,16 @@ mod tests {
     fn markdown_link_escapes_text_and_url() {
         assert_eq!(
             render_inline("[a & b_c](https://example.com/x_y#frag) % done"),
-            r"\href{https://example.com/x_y\#frag}{a \& b\_c} \% done"
+            r"\resumeLink{https://example.com/x_y\#frag}{a \& b\_c} \% done"
         );
         // Hyperref verbatim URL arg: `$`, `^`, `~` stay raw in the URL.
         assert_eq!(
             render_inline("[x](https://example.com/a$b^c~d)"),
-            r"\href{https://example.com/a$b^c~d}{x}"
+            r"\resumeLink{https://example.com/a$b^c~d}{x}"
         );
         assert_eq!(
             render_inline("see [one](https://a.b) and [two](https://c.d)"),
-            r"see \href{https://a.b}{one} and \href{https://c.d}{two}"
+            r"see \resumeLink{https://a.b}{one} and \resumeLink{https://c.d}{two}"
         );
     }
 
@@ -852,11 +914,11 @@ mod tests {
         // Balanced parens in the URL, balanced brackets in the text.
         assert_eq!(
             render_inline("[wiki](https://en.wikipedia.org/wiki/A_(B))"),
-            r"\href{https://en.wikipedia.org/wiki/A_(B)}{wiki}"
+            r"\resumeLink{https://en.wikipedia.org/wiki/A_(B)}{wiki}"
         );
         assert_eq!(
             render_inline("[see [v2]](https://example.com)"),
-            r"\href{https://example.com}{see [v2]}"
+            r"\resumeLink{https://example.com}{see [v2]}"
         );
         // Not links: no parens, empty text, empty url, space in url.
         assert_eq!(render_inline("[not a link]"), "[not a link]");
@@ -899,9 +961,22 @@ mod tests {
         };
         let tex = render_entry(&e);
         assert!(
-            tex.contains(r"\href{https://youtu.be/mNLWtM3Iya4?t=2017}{Keynote demo}"),
+            tex.contains(r"\resumeLink{https://youtu.be/mNLWtM3Iya4?t=2017}{Keynote demo}"),
             "{tex}"
         );
         assert!(!tex.contains("[Keynote demo]("), "{tex}");
+    }
+
+    #[test]
+    fn split_rank_items_keeps_paren_groups_and_strips_labels() {
+        assert_eq!(
+            split_rank_items("Languages: Strong: Python (NumPy, Qt), Java (A, B) | Beginner: Rust"),
+            vec!["Python (NumPy, Qt)", "Java (A, B)", "Rust"]
+        );
+        assert_eq!(
+            split_rank_items("Relevant coursework: Algorithms, Networks"),
+            vec!["Algorithms", "Networks"]
+        );
+        assert_eq!(skill_atoms(&[("Languages".to_string(), "Python, Python".to_string())]).len(), 1);
     }
 }

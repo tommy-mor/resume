@@ -6,10 +6,12 @@
 //! `google/gemini-decision-1` on OpenRouter (`decisions.rs`, the only
 //! AI path) → settle the vote graph with the muse-tricks random walk
 //! (`ranking.rs`) → order experience newest-first by start date
-//! (projects keep salience order) → render `template.tex` with every
-//! ranked entry → compile with tectonic/pdflatex → only if the PDF
-//! overflows one page, drop the least-salient entry and rebuild until
-//! it fits. Ranking exists solely to pick the trim order.
+//! (projects keep salience order) → also rank skill atoms and
+//! coursework atoms pairwise and keep only the top hits → render
+//! `template.tex` with every kept entry → compile with
+//! tectonic/pdflatex → only if the PDF overflows one page, drop the
+//! least-salient entry and rebuild until it fits. Ranking exists
+//! solely to pick the trim order.
 //!
 //! There is no local scoring and no other provider: without
 //! `OPENROUTER_KEY` the build fails before compiling anything.
@@ -28,11 +30,19 @@ use std::time::Instant;
 use clap::Parser;
 
 use decisions::DecisionsClient;
-use pool::{describe, render_tex, Entry, Pool};
+use pool::{describe, render_tex, skill_atoms, split_rank_items, Entry, Pool};
 use ranking::{rank_groups, MAX_ITERS, TOL};
 
 const ROOT: &str = ".";
 const DEFAULT_MODEL: &str = decisions::DEFAULT_MODEL;
+/// Skills survive: top N atoms by pairwise relevance (keeps the
+/// section to ~1 line instead of listing every tool).
+const SKILLS_KEEP: usize = 8;
+/// Votes cap for the skills tournament (bridging connects in n-1;
+/// a full pairwise over ~19 atoms would be 171 calls).
+const SKILLS_VOTES: usize = 40;
+/// Courses survive: top N atoms so coursework fits one line.
+const COURSES_KEEP: usize = 4;
 
 #[derive(Parser)]
 #[command(
@@ -49,13 +59,14 @@ struct Args {
     /// OpenRouter Decisions model id. Always served by OpenRouter.
     #[arg(long, default_value = DEFAULT_MODEL)]
     model: String,
-    /// Cap on pairwise decisions per kind. Default is the full
-    /// tournament `n*(n-1)/2`. Smaller values must still leave the vote
-    /// graph connected or the build fails (no silent partial ranking).
+    /// Cap on pairwise decisions for the combined tournament. Default
+    /// is the full tournament `n*(n-1)/2`. Smaller values must still
+    /// leave the vote graph connected or the build fails (no silent
+    /// partial ranking).
     #[arg(long)]
     max_votes: Option<usize>,
     /// Include everything without AI ranking (may spill past one page).
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-rank")]
     all: bool,
     /// Print the ranking without compiling.
     #[arg(long)]
@@ -308,7 +319,8 @@ fn sort_by_date_desc(items: &mut [(f64, Entry)]) {
 /// Index of the next entry to trim: the least-salient (lowest score).
 /// Ties go to the oldest start date (year-only earliest, then `id`),
 /// so a near-equal item is trimmed from the older end. Returns `None`
-/// for an empty list. Scores are only comparable within one kind.
+/// for an empty list. Scores come from the combined tournament, so
+/// they are comparable across experience and projects.
 fn trim_victim(items: &[(f64, Entry)]) -> Option<usize> {
     let mut victim: Option<usize> = None;
     for (i, (score, entry)) in items.iter().enumerate() {
@@ -334,6 +346,134 @@ fn trim_victim(items: &[(f64, Entry)]) -> Option<usize> {
     victim
 }
 
+/// Which kind to trim next, and which entry in it: the globally
+/// least-salient of the two kinds (combined-tournament scores).
+/// `None` when both are empty. Returns `(is_experience, index)`.
+fn global_trim_victim(exp: &[(f64, Entry)], proj: &[(f64, Entry)]) -> Option<(bool, usize)> {
+    match (trim_victim(exp), trim_victim(proj)) {
+        (None, None) => None,
+        (Some(e), None) => Some((true, e)),
+        (None, Some(p)) => Some((false, p)),
+        (Some(e), Some(p)) => {
+            let (e_score, e_entry) = &exp[e];
+            let (p_score, p_entry) = &proj[p];
+            // Lower score trims first; ties go to the older start.
+            let e_older = (e_entry.range.start_key(), &e_entry.id)
+                < (p_entry.range.start_key(), &p_entry.id);
+            let drop_exp = e_score < p_score || (e_score == p_score && e_older);
+            if drop_exp {
+                Some((true, e))
+            } else {
+                Some((false, p))
+            }
+        }
+    }
+}
+
+/// One synthetic entry per atomic skill/course for pairwise ranking.
+/// `id` is the display slug; `title` is the item; `company` is the
+/// category/school context the judge sees.
+fn synthetic_entry(id: String, title: String, context: String, kind: &'static str) -> Entry {
+    Entry {
+        id,
+        kind,
+        file: String::new(),
+        title: title.clone(),
+        company: context,
+        dates: String::new(),
+        range: pool::DateRange {
+            start_year: 2020,
+            start_month: None,
+            end_year: 2020,
+            end_month: None,
+            is_now: false,
+        },
+        location: String::new(),
+        tags: vec![],
+        bullets: vec![title],
+    }
+}
+
+/// Rank atomic skills against the job and keep the top `SKILLS_KEEP`,
+/// regrouped under their original categories in salience order.
+fn rank_skills(
+    skills: &[(String, String)],
+    job_text: &str,
+    client: &DecisionsClient,
+) -> Result<Vec<(String, String)>, String> {
+    let atoms = skill_atoms(skills);
+    if atoms.len() < 2 {
+        return Ok(skills.to_vec());
+    }
+    let entries: Vec<Entry> = atoms
+        .iter()
+        .enumerate()
+        .map(|(i, (cat, item))| {
+            synthetic_entry(format!("skill-{i}"), item.clone(), cat.clone(), "skill")
+        })
+        .collect();
+    let ranked = rank_kind("skills", &entries, job_text, client, Some(SKILLS_VOTES))?;
+    let top: Vec<Entry> = ranked.iter().take(SKILLS_KEEP).map(|(_, e)| e.clone()).collect();
+    // Group by original category order, salience order inside.
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (label, _) in skills {
+        let kept: Vec<String> = top
+            .iter()
+            .filter(|e| &e.company == label)
+            .map(|e| e.title.clone())
+            .collect();
+        if !kept.is_empty() {
+            out.push((label.clone(), kept.join(", ")));
+        }
+    }
+    Ok(out)
+}
+
+/// Rank coursework atoms and keep the top `COURSES_KEEP` on one line.
+/// Each education entry keeps a single `Relevant coursework: ...` bullet.
+fn rank_courses(
+    education: &[Entry],
+    job_text: &str,
+    client: &DecisionsClient,
+) -> Result<Vec<Entry>, String> {
+    // Collect atoms across all education entries.
+    let mut atoms: Vec<String> = Vec::new();
+    for e in education {
+        for b in &e.bullets {
+            for item in split_rank_items(b) {
+                let key = item.trim().to_lowercase();
+                if !key.is_empty() && !atoms.iter().any(|a: &String| a.to_lowercase() == key) {
+                    atoms.push(item);
+                }
+            }
+        }
+    }
+    if atoms.len() < 2 {
+        return Ok(education.to_vec());
+    }
+    let entries: Vec<Entry> = atoms
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            synthetic_entry(format!("course-{i}"), item.clone(), "Coursework".to_string(), "course")
+        })
+        .collect();
+    let ranked = rank_kind("courses", &entries, job_text, client, None)?;
+    let top: Vec<String> = ranked
+        .iter()
+        .take(COURSES_KEEP)
+        .map(|(_, e)| e.title.clone())
+        .collect();
+    Ok(education
+        .iter()
+        .map(|e| {
+            let mut next = e.clone();
+            next.bullets = vec![format!("Relevant coursework: {}", top.join(", "))];
+            next
+        })
+        .collect())
+}
+
 /// Sort criterion shared by both selection paths. Wraps [`rank_kind`]
 /// for the AI path; `--all` skips the API and returns every entry,
 /// with experience ordered newest-first by date (projects keep file
@@ -342,7 +482,7 @@ fn select(
     pool: &Pool,
     job_text: &str,
     args: &Args,
-) -> Result<(Vec<(f64, Entry)>, Vec<(f64, Entry)>), String> {
+) -> Result<(Vec<(f64, Entry)>, Vec<(f64, Entry)>, Vec<(String, String)>, Vec<Entry>), String> {
     if args.all {
         let mut exps = pool
             .experience
@@ -355,14 +495,32 @@ fn select(
             .iter()
             .map(|e| (0.0, e.clone()))
             .collect::<Vec<_>>();
-        return Ok((exps, projs));
+        return Ok((exps, projs, pool.skills.clone(), pool.education.clone()));
     }
     // One client per build; constructed lazily so `--all` needs no key.
     let client = DecisionsClient::from_env(&args.model)?;
     eprintln!("[info] ranking with {} via OpenRouter Decisions API", client.model());
-    let exps = rank_kind("experience", &pool.experience, job_text, &client, args.max_votes)?;
-    let projs = rank_kind("projects", &pool.projects, job_text, &client, args.max_votes)?;
-    Ok((exps, projs))
+    // One combined tournament over experience + projects so a single
+    // score scale orders the overflow trims (separate tournaments
+    // would make cross-kind cuts incomparable).
+    let mut combined: Vec<Entry> = Vec::with_capacity(pool.experience.len() + pool.projects.len());
+    combined.extend(pool.experience.iter().cloned());
+    combined.extend(pool.projects.iter().cloned());
+    let ranked = rank_kind("combined", &combined, job_text, &client, args.max_votes)?;
+    let (mut exps, mut projs): (Vec<(f64, Entry)>, Vec<(f64, Entry)>) = (Vec::new(), Vec::new());
+    for item in ranked {
+        if item.1.kind == "project" {
+            projs.push(item);
+        } else {
+            exps.push(item);
+        }
+    }
+    // Experience display re-orders newest-first; projects keep
+    // salience order from the tournament.
+    sort_by_date_desc(&mut exps);
+    let skills = rank_skills(&pool.skills, job_text, &client)?;
+    let education = rank_courses(&pool.education, job_text, &client)?;
+    Ok((exps, projs, skills, education))
 }
 
 fn print_selection(title: &str, items: &[(f64, Entry)]) {
@@ -510,7 +668,11 @@ fn run() -> Result<(), String> {
     let template = std::fs::read_to_string(root.join("template.tex"))
         .map_err(|e| format!("template.tex: {e}"))?;
 
-    let (ranked_exps, ranked_projs) = select(&pool, &job_text, &args)?;
+    let (ranked_exps, ranked_projs, ranked_skills, ranked_education) = select(&pool, &job_text, &args)?;
+    // Pool clone carrying the job-trimmed skills/classwork.
+    let mut pool_render = pool.clone();
+    pool_render.skills = ranked_skills;
+    pool_render.education = ranked_education;
     // No pre-filter: every ranked entry is included. Ranking only
     // orders the shrink-to-fit trims below (nothing is dropped
     // unless the compiled PDF overflows one page).
@@ -524,6 +686,15 @@ fn run() -> Result<(), String> {
     );
     print_selection("included experience", &exps_scored);
     print_selection("included projects", &projs_scored);
+    println!("=== trimmed skills ({} categories) ===", pool_render.skills.len());
+    for (label, v) in &pool_render.skills {
+        println!("  {label}: {v}");
+    }
+    for e in &pool_render.education {
+        for b in &e.bullets {
+            println!("  {b}");
+        }
+    }
     if args.list_only {
         return Ok(());
     }
@@ -534,28 +705,27 @@ fn run() -> Result<(), String> {
     let render_entries = |scored: &[(f64, Entry)]| -> Vec<Entry> {
         scored.iter().map(|(_, e)| e.clone()).collect()
     };
-    let mut tex = render_tex(&template, &pool, &render_entries(&exps_scored), &render_entries(&projs_scored));
+    let mut tex = render_tex(&template, &pool_render, &render_entries(&exps_scored), &render_entries(&projs_scored));
     let mut pages_ok = compile_tex(&tex, &args.out, args.keep_tex || args.all, &root)?;
     if !args.all {
         while !pages_ok && (!exps_scored.is_empty() || !projs_scored.is_empty()) {
-            if !projs_scored.is_empty() && (exps_scored.len() <= 2 || projs_scored.len() > 1) {
-                let idx = trim_victim(&projs_scored).expect("non-empty");
-                let (score, dropped) = projs_scored.remove(idx);
-                eprintln!(
-                    "[info] >1 page, dropping least-salient project: {} (score {:.2}) and rebuilding",
-                    dropped.id, score
-                );
-            } else if !exps_scored.is_empty() {
-                let idx = trim_victim(&exps_scored).expect("non-empty");
+            // Combined scores: drop the single globally least-salient
+            // entry per rebuild, whatever its kind.
+            let (is_exp, idx) = global_trim_victim(&exps_scored, &projs_scored).expect("non-empty");
+            if is_exp {
                 let (score, dropped) = exps_scored.remove(idx);
                 eprintln!(
                     "[info] >1 page, dropping least-salient experience: {} (score {:.2}) and rebuilding",
                     dropped.id, score
                 );
             } else {
-                break;
+                let (score, dropped) = projs_scored.remove(idx);
+                eprintln!(
+                    "[info] >1 page, dropping least-salient project: {} (score {:.2}) and rebuilding",
+                    dropped.id, score
+                );
             }
-            tex = render_tex(&template, &pool, &render_entries(&exps_scored), &render_entries(&projs_scored));
+            tex = render_tex(&template, &pool_render, &render_entries(&exps_scored), &render_entries(&projs_scored));
             pages_ok = compile_tex(&tex, &args.out, args.keep_tex, &root)?;
         }
         if !pages_ok {
@@ -677,5 +847,26 @@ mod tests {
         assert_eq!(trim_victim(&items).unwrap(), 2, "oldest of the tied lows");
         assert_eq!(trim_victim(&items[0..1]).unwrap(), 0);
         assert_eq!(trim_victim(&[]), None);
+    }
+
+    #[test]
+    fn global_trim_picks_lowest_score_across_kinds() {
+        let mut proj = entry_with("proj-low", (2023, None), (2023, None), false);
+        proj.kind = "project";
+        let exp = vec![
+            (0.40, entry_with("exp-mid", (2020, None), (2020, None), false)),
+            (0.30, entry_with("exp-high", (2024, None), (2024, None), false)),
+        ];
+        let projs = vec![(0.05, proj)];
+        // Project (0.05) is below every experience score: it goes first.
+        assert_eq!(global_trim_victim(&exp, &projs), Some((false, 0)));
+        // Raise the project above the experience lows: experience goes.
+        let projs2 = {
+            let mut p = entry_with("proj-high", (2023, None), (2023, None), false);
+            p.kind = "project";
+            vec![(0.50, p)]
+        };
+        assert_eq!(global_trim_victim(&exp, &projs2), Some((true, 1)));
+        assert_eq!(global_trim_victim(&[], &[]), None);
     }
 }

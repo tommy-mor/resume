@@ -3,7 +3,7 @@ Software Prototype Intern
 --company--
 Data Visualization Lab at Northeastern
 --dates--
-2020
+2020-01 - 2020-06
 --location--
 Boston, MA
 --tags--

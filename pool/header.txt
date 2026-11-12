@@ -5,5 +5,5 @@ Tommy Morriss
 --email--
 thmorriss@gmail.com
 --links--
-GitHub: tommy-mor
-LinkedIn: tommy-mor
+[GitHub](https://github.com/tommy-mor)
+[LinkedIn](https://www.linkedin.com/in/thomas-morriss-22706016a/)

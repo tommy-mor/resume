@@ -3,10 +3,10 @@ Engineering Intern
 --company--
 Cadence Neuroscience
 --dates--
-2021
+2021-01 - 2021-06
 --location--
+Redmond, WA
 --tags--
 python, data storage, compression, software engineering
 --bullets--
-Improved data storage system, reducing file sizes by 50%
-General software engineering support
+Wrote compression algorithm in numpy to save 50% transfer time on real human brain data recording archives

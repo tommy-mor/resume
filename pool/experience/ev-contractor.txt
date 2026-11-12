@@ -5,6 +5,7 @@ Electric Vehicle prototype
 --dates--
 2019
 --location--
+Seattle, WA
 --tags--
 hardware, kicad, pcb, schematic, embedded, prototype
 --bullets--

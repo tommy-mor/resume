@@ -10,4 +10,4 @@ Seattle, WA
 javascript, tablet, mobile, cloud, clinical, research, motor disorders
 --bullets--
 Built tablet app for recording + cloud storage of motor-disorder diagnostic drawing tests, plus JS site for remote replay/diagnosis by clinicians
-In user trials; published at EMBC: 10.1109/EMBC44109.2020.9176044
+In user trials; published at EMBC: [10.1109/EMBC44109.2020.9176044](https://www.semanticscholar.org/paper/A-tablet-and-mobile-based-application-for-remote-of-Ferleger-Sonnet/f0e732825e5c23de6801b24be9e2bb6866ebbff1)

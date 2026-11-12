@@ -3,12 +3,13 @@ Junior Developer
 --company--
 Red Planet Labs
 --dates--
-2024 - 2026-08
+2024-09 - 2026-08
 --location--
+Remote
 --tags--
 clojure, rama, react, frontend, api, jvm, agents, langgraph, langsmith, llm, debugging, developer platform
 --bullets--
 Developed features on Rama's developer platform (Clojure)
 Built entire API server + React frontend for agent-o-rama, a LangSmith/LangGraph competitor for the JVM
-Work presented as keynote at clojure/conj 2025
+[Keynote demo](https://youtu.be/mNLWtM3Iya4?t=2017) at clojure/conj 2025
 UI in production at multiple companies for debugging agents

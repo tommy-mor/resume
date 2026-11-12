@@ -6,6 +6,7 @@
 \usepackage{enumitem}
 \usepackage{titlesec}
 \usepackage{hyperref}
+\usepackage{xcolor}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 
@@ -19,7 +20,10 @@
 \setlist[itemize]{leftmargin=1.2em, itemsep=1pt, topsep=2pt, parsep=0pt, partopsep=0pt}
 \setlist[itemize,1]{label=\textbullet}
 
-\hypersetup{colorlinks=true, urlcolor=black, linkcolor=black}
+\hypersetup{colorlinks=true, urlcolor=blue, linkcolor=blue}
+
+% Clickable Markdown links: blue and underlined (not plain black).
+\newcommand{\resumeLink}[2]{\href{#1}{\textcolor{blue}{\underline{#2}}}}
 
 \newcommand{\resumeHeader}[2]{%
   \begin{center}
