@@ -1,12 +1,13 @@
+--title--
 Summer Software Intern
---
+--company--
 Microsoft
---
-Summer 2018
---
+--dates--
+2018
+--location--
 Redmond, WA
---
+--tags--
 iot, angular, facial recognition, surveys, admin dashboard
---
+--bullets--
 Built face-recognizing IoT survey device demoing new Microsoft IoT tech
 Developed Angular admin site to manage survey questions and view data

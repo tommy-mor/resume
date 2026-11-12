@@ -1,12 +1,12 @@
+--title--
 Software/Hardware Development Contractor
---
+--company--
 Electric Vehicle prototype
---
-2019 (3 months)
---
-
---
+--dates--
+2019
+--location--
+--tags--
 hardware, kicad, pcb, schematic, embedded, prototype
---
+--bullets--
 Designed end-to-end prototype software/hardware solution for new EV project
 Drew schematic, laid out footprints, and exported PCB for manufacture in KiCad

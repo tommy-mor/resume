@@ -1,12 +1,13 @@
+--title--
 Software Prototype Intern
---
+--company--
 Data Visualization Lab at Northeastern
---
-2020 (6 months)
---
+--dates--
+2020
+--location--
 Boston, MA
---
+--tags--
 python, data visualization, open source, glueviz, trees, qt
---
+--bullets--
 Created interactive linkable tree viewer for the Glue open-source data platform (github/glue/glueviz)
 Tool adopted in ongoing research and private projects

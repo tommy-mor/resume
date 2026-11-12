@@ -1,8 +1,9 @@
+--name--
 Tommy Morriss
---
+--phone--
 (206) 305-4633
---
+--email--
 thmorriss@gmail.com
---
+--links--
 GitHub: tommy-mor
 LinkedIn: tommy-mor

@@ -1,11 +1,12 @@
+--school--
 Khoury College of Computer Sciences at Northeastern University
---
+--degree--
 B.S. in Computer Science
---
-Sept. 2019 -- Dec. 2023
---
+--dates--
+2019-09 - 2023-12
+--location--
 Boston, MA
---
+--tags--
 computer science, algorithms, programming languages, compilers, networks, data visualization
---
+--bullets--
 Relevant coursework: Programming Languages, Compilers, Object Oriented Design, Algorithms, Computer Aided Reasoning, Software Development, Networks, Data Visualization

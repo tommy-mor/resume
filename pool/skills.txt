@@ -1,5 +1,6 @@
+--languages--
 Languages: Strong: Python (NumPy, Matplotlib, Pandas, Qt), JavaScript (React, React Native, Angular, Vue.js), Java, Lua, Clojure | Intermediate: Haskell, OCaml, PHP, Arduino | Beginner: Rust
---
+--os-cloud--
 Operating Systems / Cloud: Linux (10 years), iOS, Android, Windows (Azure), AWS
---
+--interests--
 Interests: Long-distance backpacking, competitive video games, biking, alternative keyboard layouts/input methods
