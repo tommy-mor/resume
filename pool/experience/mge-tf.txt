@@ -9,6 +9,6 @@ Remote
 --tags--
 javascript, svelte, startup, founder, web, fullstack, gaming, community, tournaments
 --bullets--
-Co-founded fastest-growing Team Fortress 2 league (1v1 and 2v2 formats) with 4,500+ signups across NA, EU, Asia, plus players from SA, Australia, North Africa
-Built initial website, funded initial tournaments and ongoing development
+Co-founded and run multi-region TF2 league platform with 7,100+ accounts, 3,100+ unique players, 3,100+ teams, and 3,700+ matches across 5 regions (NA, EU, AUS, SA, Asia) and 4 formats (1v1, 2v2, Ultiduo, BBall) over 29 seasons
+Built the full-stack app (SvelteKit/Svelte 5, TypeScript, PostgreSQL/Prisma) with Steam OpenID + Discord OAuth, payments, and Docker on Railway; 900+ matches in the last 30 days
 Secured permission from Valve to distribute in-game medals
